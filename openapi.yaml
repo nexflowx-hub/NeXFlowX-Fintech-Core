@@ -1,0 +1,99 @@
+openapi: 3.0.3
+info:
+  title: NeXFlowX Core Banking API
+  version: 3.1.0
+  description: Motor de Orquestração, Core Bank (In/Pending/Available) e Multi-Tenant SaaS.
+servers:
+  - url: https://api-core.nexflowx.tech/api/v1
+    description: Fintech Core Bank Environment
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+paths:
+  /auth/login:
+    post:
+      summary: Autenticação (Suporta Legacy plain-text e Bcrypt)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                username: { type: string }
+                password: { type: string }
+      responses:
+        '200':
+          description: Retorna Token JWT e role do utilizador
+
+  /wallets:
+    get:
+      summary: Lista as contas do utilizador com os 3 estágios de liquidação
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Array de Wallets contendo balance_incoming, balance_pending e balance_available.
+
+  /ledger:
+    get:
+      summary: Histórico de transações imutável
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Histórico com datas de previsão de libertação (clears_at)
+
+  /stores:
+    get:
+      summary: Lista as lojas (Isolamento Multi-Tenant)
+      security:
+        - bearerAuth: []
+    post:
+      summary: Cria uma nova loja
+      security:
+        - bearerAuth: []
+
+  /settings/gateways:
+    get:
+      summary: Gateways de pagamento (Stripe, SumUp, Mistic)
+      security:
+        - bearerAuth: []
+    post:
+      summary: Configura gateway (Chaves encriptadas em AES-256)
+      security:
+        - bearerAuth: []
+
+  /payment-links:
+    get:
+      summary: Lista todos os Payment Links ativos do Merchant
+      security:
+        - bearerAuth: []
+    post:
+      summary: Cria um novo Checkout Link
+      security:
+        - bearerAuth: []
+
+  /admin/users:
+    get:
+      summary: Backoffice - Lista utilizadores por role
+      security:
+        - bearerAuth: []
+  
+  /admin/users/{id}/force-password:
+    post:
+      summary: Backoffice - Forçar reset de password (Operador)
+      security:
+        - bearerAuth: []
+
+  /webhooks/mistic:
+    post:
+      summary: Receção de pagamentos PIX (Público)
+      responses:
+        '200':
+          description: OK

@@ -1,0 +1,282 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  admin
+  operator
+  viewer
+  merchant
+  customer 
+}
+
+enum TransactionStatus {
+  pending
+  gateway_confirmed
+  failed
+  settled
+}
+
+model Currency {
+  code            String        @id
+  type            String
+  precision       Int
+  is_active       Boolean       @default(true)
+  wallets         Wallet[]
+  ledgerEntries   LedgerEntry[]
+  created_at      DateTime      @default(now())
+}
+
+model User {
+  id                 String          @id @default(cuid())
+  username           String          @unique
+  password_hash      String
+  role               Role            @default(customer)
+  tier          String   @default("NEW") // AAA, A, B, C, NEW
+  overrideFeeInEur Decimal? // Permite taxa personalizada
+  overrideFeeInBrl Decimal?
+  overrideFeeSwap  Decimal?
+  maxVolumeMonthly Decimal @default(10000) // Limite de volume
+
+  // --- 🔒 SEGURANÇA & ACESSO ---
+  email              String?         @unique
+  email_verified     Boolean         @default(false)
+  phone              String?         @unique
+  two_factor_secret  String?
+
+  // --- 🛂 KYC & COMPLIANCE ---
+  full_name          String?
+  country            String?
+  tax_id             String?         
+  kyc_level          Int             @default(0) 
+
+  // --- 🤖 INTEGRAÇÃO CRM / CHATWOOT ---
+  chatwoot_contact_id String?        
+
+  // --- RELAÇÕES ---
+  webhook_url        String?
+  webhook_secret     String?
+  
+  stores             Store[]         
+  transactions       Transaction[]
+  apiKeys            ApiKey[]
+  gateway_configs    GatewayConfig[]
+  wallets            Wallet[]
+  payouts            Payout[]
+  created_at         DateTime        @default(now())
+  paymentLinks PaymentLink[]
+}
+
+// ==========================================
+// 🏪 MODELO SAAS (MULTI-TENANT & MARCAS)
+// ==========================================
+model Store {
+  id                 String          @id @default(cuid())
+  name               String
+  logo_url           String?
+  primary_color      String          @default("#111111")
+  accent_color       String          @default("#00FF41")
+  
+  // Roteamento e Notificações Específicas
+  webhook_url        String?
+  webhook_secret     String?
+  
+  // Atendimento IA / WhatsApp da Marca
+  whatsapp_number    String?         
+  chatwoot_inbox_id  String?         
+
+  user_id            String
+  user               User            @relation(fields: [user_id], references: [id])
+  
+  gateways           GatewayConfig[]
+  transactions       Transaction[]
+  created_at         DateTime        @default(now())
+  paymentLinks PaymentLink[]
+}
+
+// ==========================================
+// 💳 MOTOR DE GATEWAYS & SMART ROUTING
+// ==========================================
+model GatewayConfig {
+  id               String   @id @default(cuid())
+  provider_name    String   
+  api_key          String   
+  merchant_id      String   
+  is_active        Boolean  @default(true)
+  
+  // Regras de Segmentação
+  routing_rules    Json?    
+
+  // Relacionamento Híbrido
+  user_id          String
+  user             User     @relation(fields: [user_id], references: [id])
+  store_id         String?
+  store            Store?   @relation(fields: [store_id], references: [id])
+
+  created_at       DateTime @default(now())
+  @@unique([user_id, provider_name, store_id])
+}
+
+// ==========================================
+// 🏦 CORE BANK (LEDGER & WALLETS)
+// ==========================================
+model Wallet {
+  id                String        @id @default(cuid())
+  user_id           String
+  currency_code     String
+  currency          Currency      @relation(fields: [currency_code], references: [code])
+  type              String        @default("merchant") 
+  balance_incoming  Decimal       @db.Decimal(20, 8) @default(0.0)
+  balance_pending   Decimal       @db.Decimal(20, 8) @default(0.0)
+  balance_available Decimal       @db.Decimal(20, 8) @default(0.0)
+  
+  user              User          @relation(fields: [user_id], references: [id])
+  entries           LedgerEntry[]
+  
+  created_at        DateTime      @default(now())
+  updated_at        DateTime      @updatedAt
+  @@unique([user_id, currency_code, type])
+}
+
+model LedgerTransaction {
+  id              String        @id @default(cuid())
+  type            String        
+  status          String        @default("pending")
+  reference_id    String?       
+  description     String?
+  entries         LedgerEntry[]
+  created_at      DateTime      @default(now())
+  cleared_at      DateTime?
+}
+
+model LedgerEntry {
+  id                    String            @id @default(cuid())
+  ledger_transaction_id String
+  ledger_transaction    LedgerTransaction @relation(fields: [ledger_transaction_id], references: [id])
+  
+  wallet_id             String
+  wallet                Wallet            @relation(fields: [wallet_id], references: [id])
+  
+  direction             String            
+  amount                Decimal           @db.Decimal(20, 8)
+  currency_code         String
+  currency              Currency          @relation(fields: [currency_code], references: [code])
+  
+  created_at            DateTime          @default(now())
+}
+
+// ==========================================
+// 💸 TRANSAÇÕES (CHECKOUT)
+// ==========================================
+model Transaction {
+  id                      String            @id @default(cuid())
+  amount                  Decimal           @db.Decimal(15, 2)
+  currency                String
+  status                  TransactionStatus @default(pending)
+  country_code            String
+  payment_method          String
+  provider_name           String
+  
+  fee_amount              Decimal?          @db.Decimal(15, 2) @default(0.0)
+  net_amount              Decimal?          @db.Decimal(15, 2) @default(0.0)
+  provider_transaction_id String?           @unique
+  
+  customer_email          String?
+  metadata                Json?
+  
+  payee_id                String
+  payee                   User              @relation(fields: [payee_id], references: [id])
+  
+  store_id                String?           
+  store                   Store?            @relation(fields: [store_id], references: [id])
+  
+  webhook_events          WebhookEvent[]
+  clears_at               DateTime? // Previsão de quando os fundos ficam disponíveis
+  created_at              DateTime          @default(now())
+  updated_at              DateTime          @updatedAt
+}
+
+model WebhookEvent {
+  id              String      @id @default(cuid())
+  transaction     Transaction @relation(fields: [transaction_id], references: [id])
+  transaction_id  String
+  payload         Json
+  status          String      @default("pending")
+  attempts        Int         @default(0)
+  response_code   Int?
+  created_at      DateTime    @default(now())
+}
+
+model ApiKey {
+  id          String   @id @default(cuid())
+  name        String
+  key_hash    String   @unique
+  key_prefix  String
+  user_id     String
+  user        User     @relation(fields: [user_id], references: [id])
+  created_at  DateTime @default(now())
+}
+
+model Payout {
+  id            String   @id @default(cuid())
+  user_id       String
+  user          User     @relation(fields: [user_id], references: [id])
+  amount        Decimal  @db.Decimal(20, 8)
+  currency_code String
+  method        String
+  destination   String
+  status        String   @default("pending")
+  reference_id  String?
+  is_manual_ticket  Boolean  @default(false)
+  resolved_at       DateTime?
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+}
+
+model PaymentLink {
+  id          String   @id @default(cuid())
+  amount      Decimal
+  currency    String
+  description String?
+  slug        String   @unique
+  active      Boolean  @default(true)
+  userId      String
+  storeId     String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  store       Store?   @relation(fields: [storeId], references: [id], onDelete: Cascade)
+}
+
+// 💰 CONFIGURAÇÃO GLOBAL DE TIERS (Catálogo de Preços)
+model TierConfig {
+  id             String   @id @default(cuid())
+  name           String   @unique // AAA, A, B, C, NEW
+  feeInEur       Decimal
+  feeInBrl       Decimal
+  feeOut         Decimal  @default(0)
+  feeSwap        Decimal  @default(0)
+  defaultBrlProv String   // Provider BRL por defeito para este Tier
+  defaultEurProv String   // Provider EUR por defeito
+  volLimit       Decimal  // Limite global para o Tier
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+// 🏢 OS PROVEDORES MASTER DA NEXFLOWX (AHub360, NeXTech, etc.)
+model MasterProvider {
+  id             String   @id // Ex: Stripe_001_UK
+  companyName    String   // Ex: AHub360 Ltd UK
+  providerType   String   // stripe, sumup, mistic, nowpayments
+  capabilities   String[] // [CARD, MBWAY, BANCONTACT]
+  settlementDays Int      // Dias de liquidação (Ex: 4, 7, 1)
+  apiKeyEncrypted String? // A chave real da NeXFlowX (Se não for via variável de ambiente)
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+}

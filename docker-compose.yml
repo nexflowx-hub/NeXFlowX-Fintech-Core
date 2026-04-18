@@ -1,0 +1,9 @@
+services:
+  api-dev-env:
+    build: .
+    container_name: nexflowx-core-bank-dev  # Nome 100% único
+    ports:
+      - "8081:8080" # Expõe na porta 8081 para a VPS
+    env_file:
+      - .env
+    restart: unless-stopped
