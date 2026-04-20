@@ -1,3 +1,5 @@
+import { getCheckoutConfig } from './controllers/checkout.config.controller';
+import { handleOnrampWebhook } from './controllers/onramp.webhook.controller';
 import { startCronJobs } from './cron';
 import express from 'express';
 import cors from 'cors';
@@ -8,6 +10,7 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 
 import apiRoutes from './routes/api.routes';
+import { OrchestratorService } from './services/orchestrator.service'; // 🔥 IMPORT DO CÉREBRO
 
 dotenv.config();
 const app = express();
@@ -15,18 +18,17 @@ const app = express();
 const allowedOrigins = [
   'https://central.nexflowx.tech',
   'https://atlas.nexflowx.tech',
-  'https://pay.nexflowx.tech', // Frontend Vercel (Checkout V2) Autorizado
-  'http://localhost:3000',
-  'http://localhost:3001'
+  'https://pay.nexflowx.tech',
+  'https://api-core.nexflowx.tech',
+  'https://api.atlasglobal.digital',
+  'https://dashboard.atlasglobal.digital',
+  'http://localhost:3000'
 ];
 
 app.use(cors({
   origin: function (origin, callback) {
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, origin || '*');
-    } else {
-      callback(new Error('Acesso bloqueado por CORS (Origin não autorizada)'));
-    }
+    if (!origin || allowedOrigins.includes(origin)) callback(null, origin || '*');
+    else callback(new Error('Acesso bloqueado por CORS'));
   },
   methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key', 'stripe-signature', 'x-nowpayments-sig', 'x-nexflowx-signature'],
@@ -37,7 +39,6 @@ const prisma = new PrismaClient();
 const JWT_SECRET = process.env.JWT_SECRET as string;
 const MASTER_KEY = process.env.NEXFLOWX_MASTER_KEY || '';
 
-// Função de Segurança para Chaves
 function decryptKey(text: string) {
   if (!text || !text.includes(':') || !MASTER_KEY) return text;
   try {
@@ -48,15 +49,28 @@ function decryptKey(text: string) {
   } catch (e) { return text; }
 }
 
-// ⚠️ STRIPE WEBHOOK (Tem de estar antes do express.json)
 import { WebhookController } from './controllers/webhook.controller';
 app.post('/api/v1/webhooks/stripe', express.raw({ type: 'application/json' }), WebhookController.stripeWebhook);
 
 app.use(express.json());
 
-// ==========================================
-// 🔐 AUTENTICAÇÃO E LOGIN (DASHBOARD)
-// ==========================================
+// Rota de Diagnóstico Atlas Global
+app.get('/api/v1/health', (req, res) => {
+  res.status(200).json({
+    status: 'online',
+    system: 'Atlas Global Core Engine',
+    version: '2.0.0',
+    timestamp: new Date().toISOString()
+  });
+// Webhook Onramp (PIX/Crypto)
+app.post('/api/v1/webhooks/onramp', handleOnrampWebhook);
+
+});
+// Checkout Dinâmico (Smart Routing)
+app.get('/api/v1/checkout/:linkId/config', getCheckoutConfig);
+
+
+
 app.post('/api/v1/auth/login', async (req, res) => {
   try {
     const { username, password } = req.body;
@@ -64,7 +78,6 @@ app.post('/api/v1/auth/login', async (req, res) => {
     if (!user) return res.status(401).json({ error: "Credenciais inválidas" });
 
     const isValid = (user.password_hash === password) || await bcrypt.compare(password, user.password_hash);
-
     if (isValid) {
       return res.json({
         success: true,
@@ -73,26 +86,18 @@ app.post('/api/v1/auth/login', async (req, res) => {
       });
     }
     res.status(401).json({ error: "Credenciais inválidas" });
-  } catch (e) {
-    res.status(500).json({ error: "Erro interno no login" });
-  }
+  } catch (e) { res.status(500).json({ error: "Erro interno no login" }); }
 });
 
 app.use('/api/v1', apiRoutes);
 
-// ==========================================
-// 🛒 CHECKOUT SESSION (SDUI ARCHITECTURE)
-// ==========================================
 app.get('/api/v1/checkout-session/:id', async (req, res) => {
   try {
     const tx = await prisma.transaction.findUnique({
-      where: { id: req.params.id },
-      include: { payee: { select: { username: true } }, store: true }
+      where: { id: req.params.id }, include: { payee: { select: { username: true } }, store: true }
     });
-
     if (!tx) return res.status(404).json({ error: 'Sessão não encontrada' });
 
-    // Payload SDUI estrito de acordo com o types.ts do Frontend
     res.json({
       tx_id: tx.id,
       mode: 'redirect',
@@ -102,39 +107,17 @@ app.get('/api/v1/checkout-session/:id', async (req, res) => {
         accent_color: tx.store?.accent_color || "#f0ebe3",
         merchant_name: tx.store?.name || tx.payee.username
       },
-      collected_fields: [
-        { key: 'email', required: true }
-      ],
-      products: [
-        {
-          id: tx.id,
-          name: "Pagamento - " + (tx.store?.name || tx.payee.username),
-          description: "Transação Segura NeXFlowX",
-          price: Number(tx.amount),
-          currency: tx.currency,
-          type: "digital",
-          quantity: 1
-        }
-      ],
+      collected_fields: [{ key: 'email', required: true }],
+      products: [{
+        id: tx.id, name: "Pagamento - " + (tx.store?.name || tx.payee.username),
+        description: "Transação Segura NeXFlowX", price: Number(tx.amount), currency: tx.currency, type: "digital", quantity: 1
+      }],
       available_methods: [
-        {
-          id: "card_default",
-          type: "credit_card",
-          label: "Cartão de Crédito",
-          provider_data: { engine: tx.provider_name === 'stripe' ? 'stripe' : 'sumup' }
-        },
-        {
-          id: "mbway_native",
-          type: "mbway_native",
-          label: "MB WAY",
-          provider_data: { engine: "native" }
-        }
+        { id: "card_default", type: "credit_card", label: "Cartão de Crédito", provider_data: { engine: tx.provider_name === 'stripe' ? 'stripe' : 'sumup' } }
       ],
       expires_at: new Date(Date.now() + 86400000).toISOString()
     });
-  } catch (err) {
-    res.status(500).json({ error: "Erro interno" });
-  }
+  } catch (err) { res.status(500).json({ error: "Erro interno" }); }
 });
 
 app.patch('/api/v1/checkout-session/:id/customer', async (req, res) => {
@@ -147,67 +130,53 @@ app.patch('/api/v1/checkout-session/:id/customer', async (req, res) => {
       data: { customer_email, country_code: country, metadata: { ...meta, customer_name, address, updated_at: new Date() } }
     });
     res.json({ success: true });
-  } catch (e) { 
-    res.status(500).json({ error: "Erro save" }); 
-  }
+  } catch (e) { res.status(500).json({ error: "Erro save" }); }
 });
 
+// 🔥 O NOVO INITIATE ROTEADO PELO ORCHESTRATOR
 app.post('/api/v1/checkout-session/:id/initiate', async (req, res) => {
   try {
-    const tx = await prisma.transaction.findUnique({ 
-      where: { id: req.params.id },
-      include: { payee: { include: { gateway_configs: true } }, store: { include: { gateways: true } } }
-    });
+    const txId = req.params.id;
     
-    if (!tx) return res.status(404).json({ error: "Transação não encontrada" });
+    // 1. O Cérebro decide o Caminho!
+    const routePlan = await OrchestratorService.resolveBestProvider(txId);
+    const { tx, providerType } = routePlan;
 
-    const requestedProvider = tx.provider_name === 'stripe' ? 'stripe' : 'sumup';
+    let secretKey = "";
+    
+    // 2. Extrai a chave correta dependendo do Modelo
+    if (routePlan.mode === 'BYOK') {
+      secretKey = decryptKey(routePlan.apiKey || "");
+    } else if (routePlan.mode === 'PAYFAC') {
+      // JSON da NeXFlowX (Ex: { "sk": "sk_test_123..." })
+      const creds = routePlan.credentials;
+      if (!creds || !creds.sk) return res.status(500).json({ error: "Credenciais institucionais inválidas." });
+      secretKey = decryptKey(creds.sk); // Permite estar guardado encriptado na DB
+    }
 
-    let config = tx.store?.gateways.find(c => c.provider_name === requestedProvider && c.is_active);
-    if (!config) config = tx.payee.gateway_configs.find(c => c.provider_name === requestedProvider && c.is_active && !c.store_id);
+    if (!secretKey) return res.status(500).json({ error: "Chave do Gateway não encontrada." });
 
-    if (!config) return res.status(500).json({ error: `Gateway ${requestedProvider} offline ou não configurado.` });
-
-    const secretKey = decryptKey(config.api_key);
-    if (!secretKey) return res.status(500).json({ error: "Erro de encriptação ao ler chave do Gateway." });
-
-    if (requestedProvider === 'stripe') {
+    // 3. Executar Transação com Stripe
+    if (providerType === 'stripe') {
       const Stripe = require('stripe');
       const stripeInstance = new Stripe(secretKey, { apiVersion: '2023-10-16' });
-      
+
       const paymentIntent = await stripeInstance.paymentIntents.create({
         amount: Math.round(Number(tx.amount) * 100),
         currency: tx.currency.toLowerCase(),
-        metadata: { txId: tx.id }
+        metadata: { 
+          txId: tx.id, 
+          routeMode: routePlan.mode, 
+          masterNode: routePlan.masterProviderId || 'NONE' 
+        }
       });
       return res.json({ provider: 'stripe', client_secret: paymentIntent.client_secret });
-    } else if (requestedProvider === 'sumup') {
-      let merchantCode = config.merchant_id;
-      if (!merchantCode || merchantCode.startsWith('sup_pk_')) {
-        const meRes = await fetch('https://api.sumup.com/v0.1/me', { headers: { 'Authorization': `Bearer ${secretKey}` } });
-        const meData = await meRes.json();
-        if (meData.merchant_profile?.merchant_code) merchantCode = meData.merchant_profile.merchant_code;
-      }
+    } 
 
-      const sumupRes = await fetch('https://api.sumup.com/v0.1/checkouts', {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${secretKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          amount: Number(tx.amount),
-          currency: tx.currency.toUpperCase(),
-          checkout_reference: `${tx.id}_${Date.now()}`,
-          merchant_code: merchantCode
-        })
-      });
-      const data = await sumupRes.json();
-      if (!data.id) return res.status(500).json({ error: "Erro na comunicação com a SumUp", details: data });
-      return res.json({ provider: 'sumup', checkout_id: data.id });
-    }
-
-    res.status(400).json({ error: "Provedor não suportado para Iniciação de Checkout" });
-  } catch (e) { 
-    console.error("[INITIATE ERROR]", e);
-    res.status(500).json({ error: "Erro interno na iniciação do pagamento" }); 
+    res.status(400).json({ error: `Motor ${providerType} ainda não implementado no backend.` });
+  } catch (e: any) {
+    console.error("[INITIATE ERROR]", e.message);
+    res.status(500).json({ error: e.message || "Erro interno na iniciação do pagamento" });
   }
 });
 
