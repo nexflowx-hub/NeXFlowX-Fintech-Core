@@ -22,32 +22,50 @@ enum TransactionStatus {
   settled
 }
 
-model Currency {
-  code            String        @id
-  type            String
-  precision       Int
-  is_active       Boolean       @default(true)
-  wallets         Wallet[]
-  ledgerEntries   LedgerEntry[]
-  created_at      DateTime      @default(now())
+// ==========================================
+// 🏢 BAAS: ORGANIZAÇÕES (Novo Atlas Core)
+// ==========================================
+model Organization {
+  id              String   @id @default(cuid())
+  name            String
+  registration_id String?  // NIF/CNPJ da empresa mãe
+  country         String?
+  created_at      DateTime @default(now())
+  
+  users           User[]
 }
 
+// ==========================================
+// 👤 UTILIZADORES & AUTENTICAÇÃO
+// ==========================================
 model User {
   id                 String          @id @default(cuid())
   username           String          @unique
   password_hash      String
   role               Role            @default(customer)
-  tier          String   @default("NEW") // AAA, A, B, C, NEW
-  overrideFeeInEur Decimal? // Permite taxa personalizada
-  overrideFeeInBrl Decimal?
-  overrideFeeSwap  Decimal?
-  maxVolumeMonthly Decimal @default(10000) // Limite de volume
+  tier               String          @default("NEW") // AAA, A, B, C, NEW
+  overrideFeeInEur   Decimal? 
+  overrideFeeInBrl   Decimal?
+  overrideFeeSwap    Decimal?
+  maxVolumeMonthly   Decimal         @default(10000) 
+
+  // --- 🏢 LIGAÇÃO À ORGANIZAÇÃO (Atlas BaaS) ---
+  organizationId     String?
+  organization       Organization?   @relation(fields: [organizationId], references: [id])
+  isActive           Boolean         @default(true)
 
   // --- 🔒 SEGURANÇA & ACESSO ---
   email              String?         @unique
   email_verified     Boolean         @default(false)
   phone              String?         @unique
   two_factor_secret  String?
+  twoFactorEnabled   Boolean         @default(false)
+
+  // --- 🔔 NOTIFICAÇÕES (Atlas BaaS) ---
+  emailNotifications Boolean         @default(true)
+  transactionAlerts  Boolean         @default(true)
+  weeklyReports      Boolean         @default(false)
+  securityAlerts     Boolean         @default(true)
 
   // --- 🛂 KYC & COMPLIANCE ---
   full_name          String?
@@ -68,8 +86,66 @@ model User {
   gateway_configs    GatewayConfig[]
   wallets            Wallet[]
   payouts            Payout[]
+  paymentLinks       PaymentLink[]
+  
+  // --- NOVAS RELAÇÕES ATLAS ---
+  auditLogs          AuditLog[]
+  actionTickets      ActionTicket[]
+  sessions           Session[]
+
   created_at         DateTime        @default(now())
-  paymentLinks PaymentLink[]
+  lastLogin          DateTime?
+}
+
+// ==========================================
+// 🛡️ SESSÕES & AUDITORIA (Novo Atlas Core)
+// ==========================================
+model Session {
+  id              String    @id @default(cuid())
+  userId          String
+  token           String    @unique
+  expiresAt       DateTime
+  createdAt       DateTime  @default(now())
+  
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model AuditLog {
+  id              String    @id @default(cuid())
+  userId          String?
+  action          String
+  entityType      String
+  entityId        String
+  oldValue        String?   
+  newValue        String?   
+  ipAddress       String?
+  userAgent       String?
+  createdAt       DateTime  @default(now())
+  
+  user            User?     @relation(fields: [userId], references: [id])
+}
+
+model ActionTicket {
+  id              String    @id @default(cuid())
+  userId          String
+  type            String    // Ex: "withdrawal_limit_increase", "kyc_approval"
+  status          String    @default("pending") // pending, approved, rejected
+  payload         Json?     
+  adminNotes      String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  
+  user            User      @relation(fields: [userId], references: [id])
+}
+
+model Currency {
+  code            String        @id
+  type            String
+  precision       Int
+  is_active       Boolean       @default(true)
+  wallets         Wallet[]
+  ledgerEntries   LedgerEntry[]
+  created_at      DateTime      @default(now())
 }
 
 // ==========================================
@@ -82,11 +158,8 @@ model Store {
   primary_color      String          @default("#111111")
   accent_color       String          @default("#00FF41")
 
-  // Roteamento e Notificações Específicas
   webhook_url        String?
   webhook_secret     String?
-
-  // Atendimento IA / WhatsApp da Marca
   whatsapp_number    String?
   chatwoot_inbox_id  String?
 
@@ -95,8 +168,8 @@ model Store {
 
   gateways           GatewayConfig[]
   transactions       Transaction[]
+  paymentLinks       PaymentLink[]
   created_at         DateTime        @default(now())
-  paymentLinks PaymentLink[]
 }
 
 // ==========================================
@@ -105,18 +178,14 @@ model Store {
 model GatewayConfig {
   id                 String   @id @default(cuid())
   provider_name      String
-  api_key            String?  // ⚠️ OPCIONAL: O seller pode usar chaves NeXFlowX
-  merchant_id        String?  // ⚠️ OPCIONAL
+  api_key            String?  
+  merchant_id        String?  
   is_active          Boolean  @default(true)
 
-  // 🔗 A PONTE PARA A INFRAESTRUTURA PAYFAC
   master_provider_id String?
   master_provider    MasterProvider? @relation(fields: [master_provider_id], references: [id])
-
-  // Regras de Segmentação
   routing_rules      Json?
 
-  // Relacionamento Híbrido
   user_id            String
   user               User     @relation(fields: [user_id], references: [id])
   store_id           String?
@@ -200,7 +269,7 @@ model Transaction {
   store                   Store?            @relation(fields: [store_id], references: [id])
 
   webhook_events          WebhookEvent[]
-  clears_at               DateTime? // Previsão de quando os fundos ficam disponíveis
+  clears_at               DateTime? 
   created_at              DateTime          @default(now())
   updated_at              DateTime          @updatedAt
 }
@@ -258,60 +327,49 @@ model PaymentLink {
   store       Store?   @relation(fields: [storeId], references: [id], onDelete: Cascade)
 }
 
-// 💰 CONFIGURAÇÃO GLOBAL DE TIERS (Catálogo de Preços)
 model TierConfig {
   id             String   @id @default(cuid())
-  name           String   @unique // AAA, A, B, C, NEW
+  name           String   @unique 
   feeInEur       Decimal
   feeInBrl       Decimal
   feeOut         Decimal  @default(0)
   feeSwap        Decimal  @default(0)
-  defaultBrlProv String   // Provider BRL por defeito para este Tier
-  defaultEurProv String   // Provider EUR por defeito
-  volLimit       Decimal  // Limite global para o Tier
+  defaultBrlProv String   
+  defaultEurProv String   
+  volLimit       Decimal  
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 }
 
-// ==========================================
-// 🏢 OS PROVEDORES MASTER (Infraestrutura NeXFlowX Global)
-// ==========================================
 model MasterProvider {
-  id                   String   @id // Ex: Stripe_FR001, VIVA_PT002
-  providerType         String   // stripe, viva, mistic, nowpayments
-  
-  // 🏛️ Corporate & Compliance
-  companyName          String   // Nome Interno (Ex: Stripe NeXTech France)
-  merchantOfRecord     String?  // Entidade Legal (Ex: NeXTech France SAS)
-  jurisdiction         String?  // Jurisdição (Ex: FR, PT, BR)
-  
-  // ⚙️ Capacidades (Capabilities)
-  supportedMethods     String[] // ["credit_card", "sepa", "mbway", "pix_dynamic"]
-  supportedCurrencies  String[] // ["EUR", "USD", "BRL", "USDT_TRC20"]
-  allowedRegions       String[] // ["GLOBAL", "EEA", "BR"]
-  
-  // 🔐 Credenciais (Guardadas Encriptadas via Backend)
-  credentials_live     Json?    
+  id                   String   @id 
+  providerType         String   
+
+  companyName          String   
+  merchantOfRecord     String?  
+  jurisdiction         String?  
+
+  supportedMethods     String[] 
+  supportedCurrencies  String[] 
+  allowedRegions       String[] 
+
+  credentials_live     Json?
   credentials_test     Json?
-  mode                 String   @default("test") // "test" ou "live"
-  
-  // 📊 Custos e Liquidação (Para Arbitragem de Roteamento)
+  mode                 String   @default("test") 
+
   costPercentage       Decimal  @db.Decimal(5, 2) @default(1.40)
   costFixed            Decimal  @db.Decimal(10, 2) @default(0.25)
   settlementDays       Int      @default(2)
-  
-  // 🚦 Limites e Load Balancing
+
   monthlyVolumeLimit   Decimal? @db.Decimal(15, 2)
   currentMonthVolume   Decimal  @db.Decimal(15, 2) @default(0.0)
-  
-  // 🧠 Roteamento Inteligente & Saúde
+
   priorityScore        Int      @default(100)
   isActive             Boolean  @default(true)
-  healthStatus         String   @default("optimal") // "optimal", "degraded", "offline"
+  healthStatus         String   @default("optimal") 
 
-  // 🔗 RELAÇÃO INVERSA: Quais lojistas estão a usar este tubo?
   gateway_configs      GatewayConfig[]
-  
+
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 }

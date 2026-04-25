@@ -1,54 +1,91 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { PrismaClient } from '@prisma/client';
-import crypto from 'crypto';
 
 const prisma = new PrismaClient();
 
-export const authenticateUser = async (req: Request, res: Response, next: NextFunction) => {
+/**
+ * Estende a interface do Express para incluir o utilizador tipado.
+ * Evita erros de compilação ao aceder a req.user nos controllers.
+ */
+export interface AuthRequest extends Request {
+  user?: any;
+}
+
+export const authenticateUser = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  const authHeader = req.headers.authorization;
+
+  // 1. Validar a presença e formato do Header Authorization
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({
+      error: {
+        code: 'UNAUTHORIZED',
+        message: 'Token de acesso não fornecido ou formato inválido.',
+        details: {}
+      }
+    });
+  }
+
+  const token = authHeader.split(' ')[1];
+
   try {
-    // 1. Tentar Autenticação por API KEY (Servidor-para-Servidor)
-    const apiKey = req.headers['x-api-key'] as string;
-    
-    if (apiKey) {
-       const hashedKey = crypto.createHash('sha256').update(apiKey).digest('hex');
-       const keyData = await prisma.apiKey.findUnique({ 
-         where: { key_hash: hashedKey }, 
-         include: { user: true } 
-       });
-
-       if (keyData) { 
-         (req as any).user = { id: keyData.user_id, role: keyData.user.role }; 
-         return next(); 
-       }
-       return res.status(401).json({ error: "API Key inválida ou revogada" });
+    /**
+     * 2. Verificar o token com o segredo do Supabase.
+     * O segredo deve estar definido no ficheiro .env como SUPABASE_JWT_SECRET.
+     */
+    if (!process.env.SUPABASE_JWT_SECRET) {
+      throw new Error('SUPABASE_JWT_SECRET não está definido no ambiente.');
     }
 
-    // 2. Tentar Autenticação por JWT (Humano no Dashboard)
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ error: "Acesso negado. Token ou API Key ausente." });
+    const decoded = jwt.verify(token, process.env.SUPABASE_JWT_SECRET) as any;
+
+    /**
+     * 3. Sincronizar Identidade: Procurar o utilizador no Postgres (London-Core).
+     * Utilizamos o email vindo do JWT para cruzar com a nossa base de dados.
+     * Incluímos 'organization' e 'wallets' para que os controllers tenham os dados prontos.
+     */
+    const user = await prisma.user.findUnique({
+      where: { email: decoded.email },
+      include: {
+        organization: true,
+        wallets: true
+      }
+    });
+
+    // 4. Validação de Existência e Estado da Conta
+    if (!user) {
+      return res.status(401).json({
+        error: {
+          code: 'USER_NOT_SYNCHRONIZED',
+          message: 'Utilizador autenticado no Supabase não encontrado no sistema Fintech-Core.',
+          details: { email: decoded.email }
+        }
+      });
     }
 
-    const token = authHeader.split(' ')[1];
-    const secret = process.env.SUPABASE_JWT_SECRET || process.env.JWT_SECRET;
-
-    if (!secret) {
-       return res.status(500).json({ error: "Erro crítico de servidor: JWT_SECRET não definida." });
+    if (!user.isActive) {
+      return res.status(403).json({
+        error: {
+          code: 'ACCOUNT_DISABLED',
+          message: 'Esta conta de utilizador encontra-se desativada.',
+          details: {}
+        }
+      });
     }
 
-    // O TypeScript agora aceita o secret em segurança
-    const decoded = jwt.verify(token, secret as string) as any;
-    
-    (req as any).user = {
-      id: decoded.sub || decoded.id,
-      role: decoded.role || decoded.app_metadata?.role || 'merchant',
-      email: decoded.email || null
-    };
-
-    return next();
+    /**
+     * 5. Sucesso: Anexar o utilizador ao objeto da requisição.
+     * O 'req.user' passará a estar disponível em todos os endpoints protegidos.
+     */
+    req.user = user;
+    next();
   } catch (error: any) {
-    console.error("[AUTH ERROR]", error.message);
-    return res.status(401).json({ error: "Sessão expirada ou Token inválido." });
+    return res.status(401).json({
+      error: {
+        code: 'INVALID_TOKEN',
+        message: 'O token fornecido é inválido, expirou ou a assinatura não coincide.',
+        details: process.env.NODE_ENV === 'development' ? { message: error.message } : {}
+      }
+    });
   }
 };

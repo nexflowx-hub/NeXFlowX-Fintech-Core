@@ -1,20 +1,24 @@
-import { getCheckoutConfig } from './controllers/checkout.config.controller';
-import { handleOnrampWebhook } from './controllers/onramp.webhook.controller';
-import { startCronJobs } from './cron';
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { PrismaClient } from '@prisma/client';
 import crypto from 'crypto';
-import jwt from 'jsonwebtoken';
-import bcrypt from 'bcryptjs';
 
+// Controllers e Serviços
 import apiRoutes from './routes/api.routes';
-import { OrchestratorService } from './services/orchestrator.service'; // 🔥 IMPORT DO CÉREBRO
+import { OrchestratorService } from './services/orchestrator.service';
+import { getCheckoutConfig } from './controllers/checkout.config.controller';
+import { handleOnrampWebhook } from './controllers/onramp.webhook.controller';
+import { WebhookController } from './controllers/webhook.controller';
+import { startCronJobs } from './cron';
 
 dotenv.config();
 const app = express();
+const prisma = new PrismaClient();
 
+// ==========================================
+// 🛡️ CONFIGURAÇÃO DE SEGURANÇA (CORS)
+// ==========================================
 const allowedOrigins = [
   'https://central.nexflowx.tech',
   'https://atlas.nexflowx.tech',
@@ -22,21 +26,25 @@ const allowedOrigins = [
   'https://api-core.nexflowx.tech',
   'https://api.atlasglobal.digital',
   'https://dashboard.atlasglobal.digital',
-  'http://localhost:3000'
+  'https://wallet.atlasglobal.digital', // ✅ Frontend da Z.AI Adicionado
+  'http://localhost:3000',
+  'http://localhost:3001'
 ];
 
 app.use(cors({
   origin: function (origin, callback) {
+    // Permite chamadas server-to-server (sem origin) ou origens na whitelist
     if (!origin || allowedOrigins.includes(origin)) callback(null, origin || '*');
-    else callback(new Error('Acesso bloqueado por CORS'));
+    else callback(new Error('Acesso bloqueado pela Política de CORS da NeXFlowX'));
   },
   methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key', 'stripe-signature', 'x-nowpayments-sig', 'x-nexflowx-signature'],
-  credentials: true
+  credentials: true // ✅ Obrigatório para o React Query funcionar com cookies/sessões
 }));
 
-const prisma = new PrismaClient();
-const JWT_SECRET = process.env.JWT_SECRET as string;
+// ==========================================
+// 🔑 MOTOR DE ENCRIPTAÇÃO (BYOK)
+// ==========================================
 const MASTER_KEY = process.env.NEXFLOWX_MASTER_KEY || '';
 
 function decryptKey(text: string) {
@@ -49,48 +57,41 @@ function decryptKey(text: string) {
   } catch (e) { return text; }
 }
 
-import { WebhookController } from './controllers/webhook.controller';
+// ==========================================
+// 🌍 WEBHOOKS CRÍTICOS (Devem parsear Raw Body)
+// ==========================================
 app.post('/api/v1/webhooks/stripe', express.raw({ type: 'application/json' }), WebhookController.stripeWebhook);
 
+// ==========================================
+// 🛠️ MIDDLEWARES GLOBAIS
+// ==========================================
 app.use(express.json());
 
-// Rota de Diagnóstico Atlas Global
+// ==========================================
+// 🏥 DIAGNÓSTICO E ROTAS BASE
+// ==========================================
 app.get('/api/v1/health', (req, res) => {
   res.status(200).json({
     status: 'online',
     system: 'Atlas Global Core Engine',
-    version: '2.0.0',
+    version: '2.1.0', // Versão atualizada para refletir a arquitetura BaaS
     timestamp: new Date().toISOString()
   });
-// Webhook Onramp (PIX/Crypto)
-app.post('/api/v1/webhooks/onramp', handleOnrampWebhook);
-
 });
-// Checkout Dinâmico (Smart Routing)
+
+app.post('/api/v1/webhooks/onramp', handleOnrampWebhook); // ✅ Bug corrigido: Tirado de dentro do health check!
+
 app.get('/api/v1/checkout/:linkId/config', getCheckoutConfig);
 
-
-
-app.post('/api/v1/auth/login', async (req, res) => {
-  try {
-    const { username, password } = req.body;
-    const user = await prisma.user.findUnique({ where: { username } });
-    if (!user) return res.status(401).json({ error: "Credenciais inválidas" });
-
-    const isValid = (user.password_hash === password) || await bcrypt.compare(password, user.password_hash);
-    if (isValid) {
-      return res.json({
-        success: true,
-        token: jwt.sign({ id: user.id, role: user.role }, JWT_SECRET as string, { expiresIn: '24h' }),
-        user: { id: user.id, role: user.role, username: user.username }
-      });
-    }
-    res.status(401).json({ error: "Credenciais inválidas" });
-  } catch (e) { res.status(500).json({ error: "Erro interno no login" }); }
-});
-
+// ==========================================
+// 🚦 ROTAS PRINCIPAIS (Protegidas pelo Supabase Auth)
+// ==========================================
+// NOTA: A rota /auth/login antiga foi removida. O Frontend agora usa Supabase nativo.
 app.use('/api/v1', apiRoutes);
 
+// ==========================================
+// 💳 ROTEAMENTO DE SESSÕES DE PAGAMENTO (Smart Routing)
+// ==========================================
 app.get('/api/v1/checkout-session/:id', async (req, res) => {
   try {
     const tx = await prisma.transaction.findUnique({
@@ -130,33 +131,29 @@ app.patch('/api/v1/checkout-session/:id/customer', async (req, res) => {
       data: { customer_email, country_code: country, metadata: { ...meta, customer_name, address, updated_at: new Date() } }
     });
     res.json({ success: true });
-  } catch (e) { res.status(500).json({ error: "Erro save" }); }
+  } catch (e) { res.status(500).json({ error: "Erro ao salvar dados do cliente" }); }
 });
 
-// 🔥 O NOVO INITIATE ROTEADO PELO ORCHESTRATOR
+// 🔥 O CÉREBRO ORQUESTRADOR (Initiate)
 app.post('/api/v1/checkout-session/:id/initiate', async (req, res) => {
   try {
     const txId = req.params.id;
-    
-    // 1. O Cérebro decide o Caminho!
+
     const routePlan = await OrchestratorService.resolveBestProvider(txId);
     const { tx, providerType } = routePlan;
 
     let secretKey = "";
-    
-    // 2. Extrai a chave correta dependendo do Modelo
+
     if (routePlan.mode === 'BYOK') {
       secretKey = decryptKey(routePlan.apiKey || "");
     } else if (routePlan.mode === 'PAYFAC') {
-      // JSON da NeXFlowX (Ex: { "sk": "sk_test_123..." })
-      const creds = routePlan.credentials;
+      const creds = routePlan.credentials as any;
       if (!creds || !creds.sk) return res.status(500).json({ error: "Credenciais institucionais inválidas." });
-      secretKey = decryptKey(creds.sk); // Permite estar guardado encriptado na DB
+      secretKey = decryptKey(creds.sk);
     }
 
     if (!secretKey) return res.status(500).json({ error: "Chave do Gateway não encontrada." });
 
-    // 3. Executar Transação com Stripe
     if (providerType === 'stripe') {
       const Stripe = require('stripe');
       const stripeInstance = new Stripe(secretKey, { apiVersion: '2023-10-16' });
@@ -164,14 +161,14 @@ app.post('/api/v1/checkout-session/:id/initiate', async (req, res) => {
       const paymentIntent = await stripeInstance.paymentIntents.create({
         amount: Math.round(Number(tx.amount) * 100),
         currency: tx.currency.toLowerCase(),
-        metadata: { 
-          txId: tx.id, 
-          routeMode: routePlan.mode, 
-          masterNode: routePlan.masterProviderId || 'NONE' 
+        metadata: {
+          txId: tx.id,
+          routeMode: routePlan.mode,
+          masterNode: routePlan.masterProviderId || 'NONE'
         }
       });
       return res.json({ provider: 'stripe', client_secret: paymentIntent.client_secret });
-    } 
+    }
 
     res.status(400).json({ error: `Motor ${providerType} ainda não implementado no backend.` });
   } catch (e: any) {
@@ -181,4 +178,4 @@ app.post('/api/v1/checkout-session/:id/initiate', async (req, res) => {
 });
 
 startCronJobs();
-app.listen(8080, '0.0.0.0', () => console.log('🚀 NeXFlowX Core Bank API ON'));
+app.listen(8080, '0.0.0.0', () => console.log('🚀 NeXFlowX Core Bank API ON (Port 8080)'));

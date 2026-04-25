@@ -1,57 +1,80 @@
-import { Request, Response } from 'express';
+import { Response } from 'express';
 import { PrismaClient } from '@prisma/client';
+import { AuthRequest } from '../middleware/auth.middleware';
 
 const prisma = new PrismaClient();
 
 export class WalletController {
-  static async getMyWallet(req: Request, res: Response) {
+  /**
+   * GET /api/v1/wallets
+   * Lista todas as carteiras do utilizador (EUR, USD, BRL, etc.)
+   */
+  static async listMyWallets(req: AuthRequest, res: Response) {
     try {
-      const userId = (req as any).user.id;
+      const userId = req.user.id;
 
-      // 1. Procurar a carteira principal do utilizador
-      let wallet = await prisma.wallet.findFirst({
-        where: { user_id: userId }
+      const wallets = await prisma.wallet.findMany({
+        where: { user_id: userId },
+        include: {
+          currency: true
+        }
       });
 
-      // 2. Se for um utilizador novo e não tiver carteira, o sistema auto-cria uma
-      if (!wallet) {
-        // Garantir que a moeda EUR existe na base de dados para evitar erros de Foreign Key
-        await prisma.currency.upsert({
-          where: { code: 'EUR' },
-          update: {},
-          create: { code: 'EUR', type: 'fiat', precision: 2, is_active: true }
-        });
-
-        wallet = await prisma.wallet.create({
-          data: {
-            user_id: userId,
-            currency_code: 'EUR',
-            type: 'merchant',
-            balance_incoming: 0,
-            balance_pending: 0,
-            balance_available: 0
-          }
-        });
-      }
-
-      // 3. Devolver no formato que o Frontend espera { data: { ... } }
-      // Nota: Algumas versões do teu frontend pedem um array, outras um objeto. 
-      // Vamos devolver a carteira pura (objeto) mas também suportar a listagem.
-      res.json({ data: wallet });
-    } catch (error) {
-      console.error("[WALLET ERROR]", error);
-      res.status(500).json({ error: "Erro ao carregar a tesouraria." });
+      // Mapeamento para o formato Atlas Global
+      return res.json({
+        data: wallets.map(w => ({
+          id: w.id,
+          currency: w.currency_code,
+          type: w.type,
+          balance_available: w.balance_available,
+          balance_pending: w.balance_pending,
+          balance_incoming: w.balance_incoming,
+          precision: w.currency.precision
+        }))
+      });
+    } catch (error: any) {
+      return res.status(500).json({
+        error: { code: 'WALLET_FETCH_ERROR', message: 'Erro ao listar carteiras.', details: error.message }
+      });
     }
   }
 
-  // Rota para suportar caso o hook do frontend use array (useWallets)
-  static async listMyWallets(req: Request, res: Response) {
+  /**
+   * GET /api/v1/wallets/primary
+   * Retorna a carteira principal (normalmente EUR) para o resumo do Header.
+   */
+  static async getMyWallet(req: AuthRequest, res: Response) {
     try {
-      const userId = (req as any).user.id;
-      const wallets = await prisma.wallet.findMany({ where: { user_id: userId } });
-      res.json({ data: wallets });
-    } catch (error) {
-      res.status(500).json({ error: "Erro ao listar carteiras." });
+      const userId = req.user.id;
+      const { currency = 'EUR' } = req.query;
+
+      const wallet = await prisma.wallet.findFirst({
+        where: { 
+          user_id: userId,
+          currency_code: String(currency)
+        },
+        include: { currency: true }
+      });
+
+      if (!wallet) {
+        return res.status(404).json({
+          error: { code: 'WALLET_NOT_FOUND', message: `Carteira em ${currency} não encontrada.` }
+        });
+      }
+
+      return res.json({
+        data: {
+          id: wallet.id,
+          currency: wallet.currency_code,
+          balance: wallet.balance_available,
+          pending: wallet.balance_pending,
+          incoming: wallet.balance_incoming
+        }
+      });
+    } catch (error: any) {
+      return res.status(500).json({
+        error: { code: 'SERVER_ERROR', message: 'Erro ao obter carteira principal.' }
+      });
     }
   }
 }
