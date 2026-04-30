@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { authenticateUser } from '../middleware/auth.middleware';
 import { requireRole } from '../middleware/role.middleware';
 import { validate } from '../middleware/validate.middleware';
-import { swapSchema, payoutSchema } from '../validators/transaction.validator';
+import { payoutSchema } from '../validators/transaction.validator'; // Retirei o swapSchema daqui, usaremos validação própria no SwapController
 
 // Controllers
 import { VivaWebhookController } from '../controllers/viva.controller';
@@ -18,9 +18,10 @@ import { PaymentLinkController } from '../controllers/payment-link.controller';
 import { AdminController } from '../controllers/admin.controller';
 import { DepositController } from '../controllers/deposit.controller';
 import { ActionTicketController } from '../controllers/ticket.controller';
+import { SwapController } from '../controllers/swap.controller'; // NOVO CONTROLADOR DE SWAP
 
 // Futuro Controller para Roteamento de Fiat <-> Crypto
-import { OnrampController } from '../controllers/onramp.controller'; 
+import { OnrampController } from '../controllers/onramp.controller';
 
 const router = Router();
 
@@ -37,18 +38,20 @@ router.post('/users/me/password', authenticateUser, UserController.updatePasswor
 router.post('/tickets', authenticateUser, ActionTicketController.createTicket);
 
 // ==========================================
-// 🏦 TESOURARIA & CARTEIRAS
+// 🏦 TESOURARIA & CARTEIRAS (Acesso Universal)
 // ==========================================
 router.get('/wallets', authenticateUser, WalletController.listMyWallets);
 router.get('/wallets/primary', authenticateUser, WalletController.getMyWallet);
 
 // ==========================================
-// 💸 OPERAÇÕES FINANCEIRAS
+// 💸 OPERAÇÕES FINANCEIRAS B2C (Customer & Merchant)
 // ==========================================
 router.get('/transactions', authenticateUser, DashboardController.getTransactions);
-router.post('/transactions/swap', authenticateUser, validate(swapSchema), TransactionController.swap);
-router.post('/transactions/payout', authenticateUser, validate(payoutSchema), TransactionController.payout);
 router.post('/transactions/deposit', authenticateUser, DepositController.requestDeposit);
+router.post('/transactions/payout', authenticateUser, validate(payoutSchema), TransactionController.payout);
+
+// 🔥 NOVA MÁQUINA DE SWAP ATÓMICA 🔥
+router.post('/swap/execute', authenticateUser, SwapController.executeSwap);
 
 // ==========================================
 // 🔄 ONRAMP / OFFRAMP (Fiat <-> Crypto)
@@ -59,26 +62,26 @@ router.post('/onramp/initiate', authenticateUser, OnrampController.initiate);
 router.get('/onramp/status/:id', authenticateUser, OnrampController.getStatus);
 
 // ==========================================
-// 📊 DASHBOARD & RELATÓRIOS
+// 📊 DASHBOARD B2B (Métricas de Lojas)
 // ==========================================
-router.get('/dashboard/pipeline', authenticateUser, DashboardController.getPipeline);
+router.get('/dashboard/pipeline', authenticateUser, requireRole('merchant', 'admin'), DashboardController.getPipeline);
 
 // ==========================================
-// 🛠️ DEVELOPER HUB (SaaS & Gateways)
+// 🛠️ DEVELOPER HUB & SAAS (Acesso Apenas B2B)
 // ==========================================
-router.get('/api-keys', authenticateUser, ApiKeyController.listKeys);
-router.post('/api-keys', authenticateUser, ApiKeyController.createKey);
-router.delete('/api-keys/:id', authenticateUser, ApiKeyController.revokeKey);
+router.get('/api-keys', authenticateUser, requireRole('merchant', 'admin'), ApiKeyController.listKeys);
+router.post('/api-keys', authenticateUser, requireRole('merchant', 'admin'), ApiKeyController.createKey);
+router.delete('/api-keys/:id', authenticateUser, requireRole('merchant', 'admin'), ApiKeyController.revokeKey);
 
-router.get('/payment-links', authenticateUser, PaymentLinkController.list);
-router.post('/payment-links', authenticateUser, PaymentLinkController.create);
+router.get('/payment-links', authenticateUser, requireRole('merchant', 'admin'), PaymentLinkController.list);
+router.post('/payment-links', authenticateUser, requireRole('merchant', 'admin'), PaymentLinkController.create);
 
-router.get('/stores', authenticateUser, StoreController.listStores);
-router.post('/stores', authenticateUser, StoreController.createStore);
-router.patch('/stores/:id', authenticateUser, StoreController.updateStore);
+router.get('/stores', authenticateUser, requireRole('merchant', 'admin'), StoreController.listStores);
+router.post('/stores', authenticateUser, requireRole('merchant', 'admin'), StoreController.createStore);
+router.patch('/stores/:id', authenticateUser, requireRole('merchant', 'admin'), StoreController.updateStore);
 
-router.get('/settings/gateways', authenticateUser, GatewayController.listGateways);
-router.post('/settings/gateways', authenticateUser, GatewayController.createGateway);
+router.get('/settings/gateways', authenticateUser, requireRole('merchant', 'admin'), GatewayController.listGateways);
+router.post('/settings/gateways', authenticateUser, requireRole('merchant', 'admin'), GatewayController.createGateway);
 
 // ==========================================
 // 👮 BACKOFFICE / ADMIN
@@ -88,19 +91,19 @@ router.post('/admin/users/:id/force-password', authenticateUser, requireRole('ad
 router.get('/admin/payouts/pending', authenticateUser, requireRole('admin'), AdminController.listAllPendingPayouts);
 router.post('/admin/payouts/:id/approve', authenticateUser, requireRole('admin'), AdminController.approvePayout);
 
-// Gestão de Tickets / Integração de Dados
+// Gestão de Tickets (Onboarding de Lojistas)
 router.get('/admin/tickets/pending', authenticateUser, requireRole('admin'), ActionTicketController.listPendingTickets);
 router.patch('/admin/tickets/:id/resolve', authenticateUser, requireRole('admin'), ActionTicketController.resolveTicket);
 
 // ==========================================
 // 🌍 WEBHOOKS (Públicos / Sem Auth)
 // ==========================================
-router.post('/webhooks/supabase-sync', WebhookController.supabaseSync); 
+router.post('/webhooks/supabase-sync', WebhookController.supabaseSync);
 router.post('/webhooks/mistic', WebhookController.misticWebhook);
 router.post('/webhooks/nowpayments', WebhookController.nowpaymentsIpn);
 router.post('/webhooks/sumup', WebhookController.sumupWebhook);
 
-// Novos Webhooks Onramp (Confirmação de liquidação Fiat/Crypto)
+// Webhooks Onramp
 router.post('/webhooks/onramp-money', WebhookController.onrampMoneyWebhook);
 router.post('/webhooks/guardarian', WebhookController.guardarianWebhook);
 

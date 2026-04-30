@@ -1,11 +1,12 @@
-openapi: 3.0.3
+openapi: 3.0.0
 info:
-  title: NeXFlowX Core Banking API
-  version: 3.1.0
-  description: Motor de Orquestração, Core Bank (In/Pending/Available) e Multi-Tenant SaaS.
+  title: NeXFlowX Fintech Core API
+  version: 2.5.0
+  description: Sistema Operativo Financeiro BaaS/PayFac para a Atlas Global Core.
+
 servers:
-  - url: https://api-core.nexflowx.tech/api/v1
-    description: Fintech Core Bank Environment
+  - url: https://api.atlasglobal.digital/api/v1
+    description: Servidor de Produção
 
 components:
   securitySchemes:
@@ -14,86 +15,74 @@ components:
       scheme: bearer
       bearerFormat: JWT
 
+security:
+  - bearerAuth: []
+
 paths:
-  /auth/login:
+  /health:
+    get:
+      summary: Estado do sistema
+      responses:
+        '200':
+          description: OK
+  
+  /users/me:
+    get:
+      summary: Obter perfil do utilizador autenticado
+      responses:
+        '200':
+          description: Dados do perfil
+
+  /wallets:
+    get:
+      summary: Listar carteiras multimoeda (EUR, BRL, USD)
+      responses:
+        '200':
+          description: Array de carteiras com saldos
+
+  /transactions/payout:
     post:
-      summary: Autenticação (Suporta Legacy plain-text e Bcrypt)
+      summary: Solicitar levantamento de fundos (Saque)
       requestBody:
-        required: true
         content:
           application/json:
             schema:
               type: object
               properties:
-                username: { type: string }
-                password: { type: string }
+                amount: { type: number }
+                currency: { type: string }
+                destination_account: { type: string }
+
+  /tickets:
+    post:
+      summary: Abrir ticket (KYC / Aumento de Limites)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                category: { type: string }
+                subject: { type: string }
+                description: { type: string }
+
+  /admin/payouts/pending:
+    get:
+      summary: Fila de aprovação de saques (Apenas Admin)
       responses:
         '200':
-          description: Retorna Token JWT e role do utilizador
+          description: Lista de pedidos pendentes
 
-  /wallets:
-    get:
-      summary: Lista as contas do utilizador com os 3 estágios de liquidação
-      security:
-        - bearerAuth: []
-      responses:
-        '200':
-          description: Array de Wallets contendo balance_incoming, balance_pending e balance_available.
-
-  /ledger:
-    get:
-      summary: Histórico de transações imutável
-      security:
-        - bearerAuth: []
-      responses:
-        '200':
-          description: Histórico com datas de previsão de libertação (clears_at)
-
-  /stores:
-    get:
-      summary: Lista as lojas (Isolamento Multi-Tenant)
-      security:
-        - bearerAuth: []
+  /admin/payouts/{id}/approve:
     post:
-      summary: Cria uma nova loja
-      security:
-        - bearerAuth: []
+      summary: Liquidar e aprovar saída de dinheiro
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
 
-  /settings/gateways:
-    get:
-      summary: Gateways de pagamento (Stripe, SumUp, Mistic)
-      security:
-        - bearerAuth: []
+  /webhooks/supabase-sync:
     post:
-      summary: Configura gateway (Chaves encriptadas em AES-256)
-      security:
-        - bearerAuth: []
-
-  /payment-links:
-    get:
-      summary: Lista todos os Payment Links ativos do Merchant
-      security:
-        - bearerAuth: []
-    post:
-      summary: Cria um novo Checkout Link
-      security:
-        - bearerAuth: []
-
-  /admin/users:
-    get:
-      summary: Backoffice - Lista utilizadores por role
-      security:
-        - bearerAuth: []
-  
-  /admin/users/{id}/force-password:
-    post:
-      summary: Backoffice - Forçar reset de password (Operador)
-      security:
-        - bearerAuth: []
-
-  /webhooks/mistic:
-    post:
-      summary: Receção de pagamentos PIX (Público)
-      responses:
-        '200':
-          description: OK
+      summary: Sincronização automática de utilizadores (Internal Use)
+      security: []

@@ -47,6 +47,10 @@ model User {
   overrideFeeInEur   Decimal? 
   overrideFeeInBrl   Decimal?
   overrideFeeSwap    Decimal?
+  overrideFeeOutCrypto Decimal?
+  overrideFeeOutPix    Decimal?
+  overrideFeeOutSepa   Decimal?
+  metadata             Json?
   maxVolumeMonthly   Decimal         @default(10000) 
 
   // --- 🏢 LIGAÇÃO À ORGANIZAÇÃO (Atlas BaaS) ---
@@ -306,6 +310,8 @@ model Payout {
   status            String   @default("pending")
   reference_id      String?
   is_manual_ticket  Boolean  @default(false)
+  extra_fee_amount  Decimal? @db.Decimal(15, 2)
+  metadata          Json?
   resolved_at       DateTime?
   created_at        DateTime @default(now())
   updated_at        DateTime @updatedAt
@@ -332,7 +338,9 @@ model TierConfig {
   name           String   @unique 
   feeInEur       Decimal
   feeInBrl       Decimal
-  feeOut         Decimal  @default(0)
+  feeOutCrypto   Decimal  @default(0)
+  feeOutPix      Decimal  @default(0)
+  feeOutSepa     Decimal  @default(0)
   feeSwap        Decimal  @default(0)
   defaultBrlProv String   
   defaultEurProv String   
